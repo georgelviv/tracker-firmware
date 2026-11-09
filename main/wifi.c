@@ -46,6 +46,8 @@ esp_err_t wifi_start(void)
     wifi_config_t cfg = {0};
     strlcpy((char *)cfg.sta.ssid, CONFIG_TRACKER_WIFI_SSID, sizeof(cfg.sta.ssid));
     strlcpy((char *)cfg.sta.password, CONFIG_TRACKER_WIFI_PASSWORD, sizeof(cfg.sta.password));
+    // Minimum accepted security; WPA3 networks still connect.
+    cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
