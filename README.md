@@ -1,0 +1,52 @@
+# Stezhka firmware
+
+ESP-IDF v6.0 firmware for the **LilyGO T-SIM A7670E** (ESP32 + SIMCom A7670E with built-in GNSS).
+
+It powers on the modem, enables GNSS, and every _N_ seconds reads a fix with
+`AT+CGNSSINFO` and writes it to Firebase Realtime Database over Wi-Fi.
+
+## Layout
+
+| File | What it does |
+|---|---|
+| `main/board.h` | Pin map for the T-A7670 board |
+| `main/modem.c` | UART link, power-on sequence, `modem_at()` helper |
+| `main/gnss.c` | GNSS power-on and `+CGNSSINFO` parsing (both NMEA `ddmm.mmmm` and decimal-degree firmware formats) |
+| `main/wifi.c` | Wi-Fi station with auto-reconnect |
+| `main/firebase.c` | Firebase Auth sign-in (e-mail/password) and a REST `PUT` to RTDB |
+| `main/app_main.c` | Main loop |
+
+## Data written
+
+Each fix overwrites the device's latest position. No history is stored.
+
+```
+/devices/<deviceId>/latest = { lat, lon, alt, speed, course, hdop, sats, ts, receivedAt, via }
+```
+
+`ts` is the GNSS UTC time in epoch ms. `receivedAt` is the Firebase server timestamp.
+
+## Build and flash
+
+```bash
+source ~/.espressif/tools/activate_idf_v6.0.sh
+idf.py menuconfig        # Tracker configuration -> Wi-Fi, Firebase, device ID
+idf.py build flash monitor
+```
+
+Credentials live in `sdkconfig`, which is git-ignored. Never commit it.
+
+## Firebase setup
+
+Positions show up on the map at **https://stezhka-tracker.web.app/**.
+
+Firebase setup is described in the [tracker-ui README](https://github.com/georgelviv/tracker-ui#one-time-firebase-setup).
+The device needs its own Firebase Auth user, and an entry in `/deviceWriters/<deviceId>` holding that user's UID.
+
+## Roadmap
+
+- [ ] Position history (track)
+- [ ] Buffer fixes in NVS/SD while offline and flush later
+- [ ] LTE data via PPP (`esp_modem`): `firebase.c` stays as is because it only needs an IP link
+- [ ] SMS fallback
+- [ ] Battery voltage (GPIO35) and light sleep between fixes

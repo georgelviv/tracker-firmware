@@ -1,0 +1,44 @@
+menu "Tracker configuration"
+
+    config TRACKER_DEVICE_ID
+        string "Device ID"
+        default "tracker-01"
+        help
+            Key under /devices/ in the Realtime Database.
+
+    config TRACKER_REPORT_INTERVAL_S
+        int "Report interval (seconds)"
+        default 30
+        range 5 86400
+
+    menu "Wi-Fi"
+        config TRACKER_WIFI_SSID
+            string "SSID"
+            default ""
+        config TRACKER_WIFI_PASSWORD
+            string "Password"
+            default ""
+    endmenu
+
+    menu "Firebase"
+        config TRACKER_FIREBASE_API_KEY
+            string "Web API key"
+            default ""
+            help
+                Project settings -> General -> Web API key.
+        config TRACKER_FIREBASE_DB_URL
+            string "Realtime Database URL"
+            default "https://stezhka-tracker-default-rtdb.europe-west1.firebasedatabase.app"
+            help
+                No trailing slash.
+        config TRACKER_DEVICE_EMAIL
+            string "Device account e-mail"
+            default ""
+            help
+                Firebase Auth e-mail/password user the device signs in as.
+        config TRACKER_DEVICE_PASSWORD
+            string "Device account password"
+            default ""
+    endmenu
+
+endmenu

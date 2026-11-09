@@ -1,0 +1,8 @@
+build/
+managed_components/
+dependencies.lock
+# sdkconfig holds your Wi-Fi password and device credentials - never commit it
+sdkconfig
+sdkconfig.old
+.vscode/
+.DS_Store
