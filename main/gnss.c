@@ -3,41 +3,30 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-#include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "modem.h"
 
-static const char *TAG = "gnss";
+#ifndef GNSS_HOST_TEST
+#include "board.h"
+#include "driver/gpio.h"
+#include "driver/uart.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#endif
 
 #define MAX_FIELDS 24
 
-esp_err_t gnss_init(void)
-{
-    char buf[128];
-    if (modem_at("AT+CGNSSPWR=1", buf, sizeof(buf), 5000) != ESP_OK) {
-        ESP_LOGE(TAG, "AT+CGNSSPWR=1 failed: %s", buf);
-        return ESP_FAIL;
-    }
-    // GPS + GLONASS + BeiDou + Galileo (falls back silently if unsupported).
-    modem_at("AT+CGNSSMODE=15", NULL, 0, 2000);
-    ESP_LOGI(TAG, "GNSS powered on; first fix may take a minute outdoors");
-    return ESP_OK;
-}
+// ---------------------------------------------------------------------------
+// NMEA parsing (pure, host-testable)
+// ---------------------------------------------------------------------------
 
-// Values come either as decimal degrees ("49.8397") or NMEA ddmm.mmmm
-// ("4950.3820") depending on modem firmware. Decimal degrees never have more
-// than 3 integer digits, NMEA always has at least 4.
+// NMEA ddmm.mmmm / dddmm.mmmm -> decimal degrees.
 static double parse_coord(const char *s)
 {
-    const char *dot = strchr(s, '.');
-    size_t int_digits = dot ? (size_t)(dot - s) : strlen(s);
     double v = atof(s);
-    if (int_digits >= 4) {
-        double deg = floor(v / 100.0);
-        v = deg + (v - deg * 100.0) / 60.0;
-    }
-    return v;
+    double deg = floor(v / 100.0);
+    return deg + (v - deg * 100.0) / 60.0;
 }
 
 // Days since 1970-01-01 for a proleptic Gregorian date (H. Hinnant's algorithm).
@@ -51,9 +40,9 @@ static int64_t days_from_civil(int y, unsigned m, unsigned d)
     return (int64_t)era * 146097 + (int64_t)doe - 719468;
 }
 
+// date: ddmmyy, time: hhmmss(.sss)
 static int64_t parse_ts_ms(const char *date, const char *time)
 {
-    // date: ddmmyy, time: hhmmss(.s)
     if (strlen(date) < 6 || strlen(time) < 6) {
         return 0;
     }
@@ -67,7 +56,41 @@ static int64_t parse_ts_ms(const char *date, const char *time)
     return (days * 86400 + hh * 3600 + mi * 60) * 1000 + (int64_t)llround(ss * 1000.0);
 }
 
-// Splits on commas in place, keeping empty fields.
+static int hexval(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+// Validates "$...*HH" and copies the payload between '$' and '*' into out.
+static bool checked_payload(const char *line, char *out, size_t out_len)
+{
+    if (line[0] != '$') {
+        return false;
+    }
+    const char *star = strchr(line, '*');
+    if (!star || !star[1] || !star[2]) {
+        return false;
+    }
+    unsigned char sum = 0;
+    for (const char *p = line + 1; p < star; p++) {
+        sum ^= (unsigned char)*p;
+    }
+    int hi = hexval(star[1]), lo = hexval(star[2]);
+    if (hi < 0 || lo < 0 || sum != (unsigned char)(hi * 16 + lo)) {
+        return false;
+    }
+    size_t n = (size_t)(star - line - 1);
+    if (n >= out_len) {
+        return false;
+    }
+    memcpy(out, line + 1, n);
+    out[n] = '\0';
+    return true;
+}
+
 static int split_fields(char *s, char **fields, int max)
 {
     int n = 0;
@@ -81,67 +104,139 @@ static int split_fields(char *s, char **fields, int max)
     return n;
 }
 
-bool gnss_parse_cgnssinfo(const char *line, gnss_fix_t *out)
+bool gnss_nmea_parse(const char *line, gnss_nmea_state_t *st)
 {
-    // +CGNSSINFO: <mode>,<GPS-SVs>,[<GLONASS-SVs>,]<BEIDOU-SVs>,[<GALILEO-SVs>,]
-    //             <lat>,<N/S>,<lon>,<E/W>,<date>,<UTC-time>,<alt>,<speed>,<course>,
-    //             <PDOP>,<HDOP>,<VDOP>
-    // The number of satellite-count fields differs between firmware versions, so
-    // the parser anchors on the N/S hemisphere field instead of fixed indices.
-    const char *p = strstr(line, "+CGNSSINFO:");
-    if (!p) {
+    char buf[128];
+    if (!checked_payload(line, buf, sizeof(buf))) {
         return false;
     }
-    p += strlen("+CGNSSINFO:");
-    while (*p == ' ') {
-        p++;
-    }
-
-    char buf[192];
-    strlcpy(buf, p, sizeof(buf));
-    char *eol = strpbrk(buf, "\r\n");
-    if (eol) {
-        *eol = '\0';
-    }
-
     char *f[MAX_FIELDS];
     int n = split_fields(buf, f, MAX_FIELDS);
-
-    int ns = -1;
-    for (int i = 1; i < n; i++) {
-        if (strcmp(f[i], "N") == 0 || strcmp(f[i], "S") == 0) {
-            ns = i;
-            break;
-        }
-    }
-    // Need lat, N/S, lon, E/W, date, time, alt, speed, course, PDOP, HDOP.
-    if (ns < 1 || ns + 9 >= n || f[ns - 1][0] == '\0') {
+    if (strlen(f[0]) != 5) {  // talker (GP/GN/BD/GL) + type
         return false;
     }
+    const char *type = f[0] + 2;
 
-    memset(out, 0, sizeof(*out));
-    out->lat = parse_coord(f[ns - 1]) * (f[ns][0] == 'S' ? -1 : 1);
-    out->lon = parse_coord(f[ns + 1]) * (f[ns + 2][0] == 'W' ? -1 : 1);
-    out->ts_ms = parse_ts_ms(f[ns + 3], f[ns + 4]);
-    out->alt_m = atof(f[ns + 5]);
-    out->speed_kmh = atof(f[ns + 6]) * 1.852f;  // knots -> km/h
-    out->course_deg = atof(f[ns + 7]);
-    out->hdop = atof(f[ns + 9]);
-    for (int i = 1; i < ns - 1; i++) {  // satellite counts sit between mode and lat
-        out->sats += atoi(f[i]);
+    if (strcmp(type, "RMC") == 0 && n >= 10) {
+        // $xxRMC,time,status,lat,N/S,lon,E/W,speed_kn,course,date,...
+        st->rmc_valid = f[2][0] == 'A' && f[3][0] && f[5][0];
+        if (st->rmc_valid) {
+            st->fix.lat = parse_coord(f[3]) * (f[4][0] == 'S' ? -1 : 1);
+            st->fix.lon = parse_coord(f[5]) * (f[6][0] == 'W' ? -1 : 1);
+            st->fix.speed_kmh = atof(f[7]) * 1.852f;  // knots -> km/h
+            st->fix.course_deg = atof(f[8]);
+            st->fix.ts_ms = parse_ts_ms(f[9], f[1]);
+        }
+        return true;
     }
-    return true;
+    if (strcmp(type, "GGA") == 0 && n >= 10) {
+        // $xxGGA,time,lat,N/S,lon,E/W,quality,sats,hdop,alt,M,...
+        st->fix.sats = atoi(f[7]);
+        st->fix.hdop = atof(f[8]);
+        st->fix.alt_m = atof(f[9]);
+        return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// UART reader (device only)
+// ---------------------------------------------------------------------------
+#ifndef GNSS_HOST_TEST
+
+static const char *TAG = "gnss";
+
+#define FIX_MAX_AGE_US   (5 * 1000000LL)   // a fix older than this is stale
+#define NMEA_MAX_AGE_US  (5 * 1000000LL)   // no sentences for this long = no data
+
+static SemaphoreHandle_t s_lock;
+static gnss_nmea_state_t s_state;
+static int64_t s_last_fix_us;   // when the last valid RMC arrived
+static int64_t s_last_nmea_us;  // when any valid sentence arrived
+
+static void gnss_task(void *arg)
+{
+    char line[128];
+    size_t len = 0;
+    uint8_t chunk[128];
+
+    for (;;) {
+        int n = uart_read_bytes(GPS_UART_NUM, chunk, sizeof(chunk), pdMS_TO_TICKS(200));
+        for (int i = 0; i < n; i++) {
+            char c = (char)chunk[i];
+            if (c == '$') {
+                len = 0;  // resync on every sentence start
+            }
+            if (c == '\n' || c == '\r') {
+                if (len > 0) {
+                    line[len] = '\0';
+                    xSemaphoreTake(s_lock, portMAX_DELAY);
+                    if (gnss_nmea_parse(line, &s_state)) {
+                        int64_t now = esp_timer_get_time();
+                        s_last_nmea_us = now;
+                        if (s_state.rmc_valid && strstr(line, "RMC")) {
+                            s_last_fix_us = now;
+                        }
+                    }
+                    xSemaphoreGive(s_lock);
+                    len = 0;
+                }
+                continue;
+            }
+            if (len < sizeof(line) - 1) {
+                line[len++] = c;
+            } else {
+                len = 0;  // overlong garbage
+            }
+        }
+    }
+}
+
+esp_err_t gnss_init(void)
+{
+    s_lock = xSemaphoreCreateMutex();
+
+    // Keep the L76K out of standby.
+    gpio_reset_pin(GPS_WAKEUP_PIN);
+    gpio_set_direction(GPS_WAKEUP_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPS_WAKEUP_PIN, 1);
+
+    uart_config_t cfg = {
+        .baud_rate = GPS_BAUDRATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    ESP_ERROR_CHECK(uart_driver_install(GPS_UART_NUM, 2048, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(GPS_UART_NUM, &cfg));
+    ESP_ERROR_CHECK(uart_set_pin(GPS_UART_NUM, GPS_TX_PIN, GPS_RX_PIN,
+                                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+
+    xTaskCreate(gnss_task, "gnss", 4096, NULL, 5, NULL);
+    ESP_LOGI(TAG, "L76K GPS on UART%d (RX=%d TX=%d, %d baud)", GPS_UART_NUM, GPS_RX_PIN,
+             GPS_TX_PIN, GPS_BAUDRATE);
+    return ESP_OK;
 }
 
 esp_err_t gnss_get_fix(gnss_fix_t *out)
 {
-    char buf[256];
-    if (modem_at("AT+CGNSSINFO", buf, sizeof(buf), 3000) != ESP_OK) {
-        ESP_LOGW(TAG, "AT+CGNSSINFO failed: %s", buf);
-        return ESP_FAIL;
+    int64_t now = esp_timer_get_time();
+    esp_err_t ret;
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_last_nmea_us == 0 || now - s_last_nmea_us > NMEA_MAX_AGE_US) {
+        ret = ESP_ERR_INVALID_STATE;
+    } else if (s_last_fix_us == 0 || now - s_last_fix_us > FIX_MAX_AGE_US) {
+        *out = s_state.fix;  // sats/hdop are still useful while searching
+        ret = ESP_ERR_NOT_FOUND;
+    } else {
+        *out = s_state.fix;
+        ret = ESP_OK;
     }
-    if (!gnss_parse_cgnssinfo(buf, out)) {
-        return ESP_ERR_NOT_FOUND;
-    }
-    return ESP_OK;
+    xSemaphoreGive(s_lock);
+    return ret;
 }
+
+#endif  // GNSS_HOST_TEST

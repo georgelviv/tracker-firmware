@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include "esp_err.h"
 
-// Powers the A7670E on and waits until it answers AT commands.
+// Powers the A7670 modem on and waits until it answers AT commands.
 esp_err_t modem_init(void);
 
 // Sends `cmd` (without CRLF) and collects the reply into `resp` until a final

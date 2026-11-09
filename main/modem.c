@@ -100,14 +100,17 @@ esp_err_t modem_init(void)
     ESP_ERROR_CHECK(uart_set_pin(MODEM_UART_NUM, MODEM_TX_PIN, MODEM_RX_PIN,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    ESP_LOGI(TAG, "powering on A7670E");
+    ESP_LOGI(TAG, "powering on modem");
     power_sequence();
 
     for (int i = 0; i < 30; i++) {
         if (modem_at("AT", NULL, 0, 1000) == ESP_OK) {
-            modem_at("ATE0", NULL, 0, 1000);  // no command echo
-            char buf[128];
-            if (modem_at("ATI", buf, sizeof(buf), 1000) == ESP_OK) {
+            modem_at("ATE0", NULL, 0, 1000);     // no command echo
+            modem_at("AT+CMEE=2", NULL, 0, 1000); // verbose "+CME ERROR: <text>"
+            char buf[256];
+            // Log the model: this board's A7670G-LLSE has no GNSS (the L76K does that).
+            if (modem_at("AT+SIMCOMATI", buf, sizeof(buf), 2000) == ESP_OK ||
+                modem_at("ATI", buf, sizeof(buf), 2000) == ESP_OK) {
                 ESP_LOGI(TAG, "modem ready:\n%s", buf);
             }
             return ESP_OK;

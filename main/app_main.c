@@ -24,14 +24,13 @@ void app_main(void)
     ESP_LOGI(TAG, "device %s, reporting every %d s", CONFIG_TRACKER_DEVICE_ID,
              CONFIG_TRACKER_REPORT_INTERVAL_S);
 
+    ESP_ERROR_CHECK(gnss_init());  // start searching for satellites right away
     wifi_start();
 
-    while (modem_init() != ESP_OK) {
-        ESP_LOGW(TAG, "retrying modem power-on in 5 s");
-        vTaskDelay(pdMS_TO_TICKS(5000));
-    }
-    while (gnss_init() != ESP_OK) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
+    // The modem is not needed for Wi-Fi tracking; it is powered up now so the
+    // LTE path can be added later. A failure here does not stop tracking.
+    if (modem_init() != ESP_OK) {
+        ESP_LOGW(TAG, "modem not responding; continuing with Wi-Fi only");
     }
 
     const TickType_t period = pdMS_TO_TICKS(CONFIG_TRACKER_REPORT_INTERVAL_S * 1000);
@@ -51,7 +50,9 @@ void app_main(void)
                 ESP_LOGW(TAG, "no Wi-Fi, fix dropped");  // TODO: queue offline / send via LTE
             }
         } else if (err == ESP_ERR_NOT_FOUND) {
-            ESP_LOGI(TAG, "waiting for GNSS fix...");
+            ESP_LOGI(TAG, "waiting for GPS fix... (satellites in use: %d)", fix.sats);
+        } else {
+            ESP_LOGW(TAG, "no data from the L76K GPS module - check that it is fitted and powered");
         }
         vTaskDelayUntil(&last, period);
     }

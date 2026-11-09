@@ -1,17 +1,20 @@
 # Stezhka firmware
 
-ESP-IDF v6.0 firmware for the **LilyGO T-SIM A7670E** (ESP32 + SIMCom A7670E with built-in GNSS).
+ESP-IDF v6.0 firmware for the **LilyGO T-A7670G R2 with L76K GPS** (ESP32 + SIMCom
+A7670G-LLSE modem + Quectel L76K GNSS module).
 
-It powers on the modem, enables GNSS, and every _N_ seconds reads a fix with
-`AT+CGNSSINFO` and writes it to Firebase Realtime Database over Wi-Fi.
+The A7670G modem has no GNSS of its own. Position comes from the L76K, which is
+wired straight to the ESP32 (UART2: RX GPIO22, TX GPIO21, 9600 baud; WAKEUP GPIO19).
+Every _N_ seconds the firmware takes the latest NMEA fix and writes it to Firebase
+Realtime Database over Wi-Fi. The modem is powered up but not used yet; it is kept for LTE.
 
 ## Layout
 
 | File | What it does |
 |---|---|
-| `main/board.h` | Pin map for the T-A7670 board |
-| `main/modem.c` | UART link, power-on sequence, `modem_at()` helper |
-| `main/gnss.c` | GNSS power-on and `+CGNSSINFO` parsing (both NMEA `ddmm.mmmm` and decimal-degree firmware formats) |
+| `main/board.h` | Pin map for the T-A7670G + L76K board |
+| `main/modem.c` | Modem UART link, power-on sequence, `modem_at()` helper (for future LTE) |
+| `main/gnss.c` | L76K reader: NMEA `RMC`/`GGA` parsing with checksum validation |
 | `main/wifi.c` | Wi-Fi station with auto-reconnect |
 | `main/firebase.c` | Firebase Auth sign-in (e-mail/password) and a REST `PUT` to RTDB |
 | `main/app_main.c` | Main loop |
@@ -35,6 +38,13 @@ idf.py build flash monitor
 ```
 
 Credentials live in `sdkconfig`, which is git-ignored. Never commit it.
+
+Put the GPS antenna on the L76K's connector, not the modem's, and give it sky view.
+The first fix usually takes 30 s to a few minutes.
+
+`sdkconfig.defaults` enables `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY`.
+Google serves GTS Root R1/R4 cross-signed by the retired "GlobalSign Root CA", which is no
+longer in the bundle. Without this option, TLS to Firebase fails with "No matching trusted root certificate".
 
 ## Firebase setup
 

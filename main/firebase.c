@@ -23,6 +23,11 @@ static esp_err_t http_request(esp_http_client_method_t method, const char *url,
                               const char *body, char *resp, size_t resp_len,
                               int *status)
 {
+    if (resp && resp_len > 0) {
+        resp[0] = '\0';  // never log stale buffer contents on failure
+    }
+    *status = 0;
+
     esp_http_client_config_t cfg = {
         .url = url,
         .method = method,
