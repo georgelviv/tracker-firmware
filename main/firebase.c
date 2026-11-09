@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "cJSON.h"
+#include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -117,7 +118,9 @@ static esp_err_t ensure_token(void)
     return sign_in();
 }
 
-static cJSON *fix_to_json(const gnss_fix_t *fix)
+static const char *SYS_NAMES[GNSS_SYS_COUNT] = {"gps", "glonass", "beidou", "galileo"};
+
+static cJSON *fix_to_json(const gnss_fix_t *fix, const link_info_t *link)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "lat", fix->lat);
@@ -128,19 +131,45 @@ static cJSON *fix_to_json(const gnss_fix_t *fix)
     cJSON_AddNumberToObject(o, "hdop", fix->hdop);
     cJSON_AddNumberToObject(o, "sats", fix->sats);
     cJSON_AddNumberToObject(o, "ts", (double)fix->ts_ms);
-    cJSON_AddStringToObject(o, "via", "wifi");
+    cJSON_AddStringToObject(o, "via", link ? link->type : "wifi");
+
+    cJSON *gps = cJSON_AddObjectToObject(o, "gps");
+    cJSON_AddNumberToObject(gps, "quality", fix->quality);
+    cJSON_AddNumberToObject(gps, "fixType", fix->fix_type);
+    cJSON_AddNumberToObject(gps, "pdop", fix->pdop);
+    cJSON_AddNumberToObject(gps, "vdop", fix->vdop);
+    cJSON_AddNumberToObject(gps, "geoid", fix->geoid_m);
+    cJSON_AddNumberToObject(gps, "snrAvg", fix->snr_avg);
+    cJSON_AddNumberToObject(gps, "snrMax", fix->snr_max);
+    cJSON *view = cJSON_AddObjectToObject(gps, "inView");
+    for (int i = 0; i < GNSS_SYS_COUNT; i++) {
+        cJSON_AddNumberToObject(view, SYS_NAMES[i], fix->in_view[i]);
+    }
+
+    if (link) {
+        cJSON *net = cJSON_AddObjectToObject(o, "net");
+        cJSON_AddStringToObject(net, "type", link->type);
+        cJSON_AddStringToObject(net, "name", link->name);
+        cJSON_AddNumberToObject(net, "rssi", link->rssi);
+        cJSON_AddNumberToObject(net, "channel", link->channel);
+        cJSON_AddStringToObject(net, "ip", link->ip);
+    }
+
+    cJSON *dev = cJSON_AddObjectToObject(o, "device");
+    cJSON_AddNumberToObject(dev, "uptime", (double)(esp_timer_get_time() / 1000000));
+    cJSON_AddStringToObject(dev, "fw", esp_app_get_description()->version);
     cJSON *sv = cJSON_AddObjectToObject(o, "receivedAt");
     cJSON_AddStringToObject(sv, ".sv", "timestamp");  // server-side timestamp
     return o;
 }
 
-esp_err_t firebase_publish_fix(const gnss_fix_t *fix)
+esp_err_t firebase_publish_fix(const gnss_fix_t *fix, const link_info_t *link)
 {
     if (ensure_token() != ESP_OK) {
         return ESP_FAIL;
     }
 
-    cJSON *json = fix_to_json(fix);
+    cJSON *json = fix_to_json(fix, link);
     char *body = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
 

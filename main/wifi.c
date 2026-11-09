@@ -1,5 +1,6 @@
 #include "wifi.h"
 
+#include <stdio.h>
 #include <string.h>
 #include "esp_event.h"
 #include "esp_log.h"
@@ -54,6 +55,23 @@ esp_err_t wifi_start(void)
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_LOGI(TAG, "connecting to \"%s\"", CONFIG_TRACKER_WIFI_SSID);
     return ESP_OK;
+}
+
+bool wifi_get_info(link_info_t *out)
+{
+    wifi_ap_record_t ap;
+    esp_netif_ip_info_t ip;
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!wifi_wait_connected(0) || esp_wifi_sta_get_ap_info(&ap) != ESP_OK || !netif ||
+        esp_netif_get_ip_info(netif, &ip) != ESP_OK) {
+        return false;
+    }
+    out->type = "wifi";
+    strlcpy(out->name, (const char *)ap.ssid, sizeof(out->name));
+    out->rssi = ap.rssi;
+    out->channel = ap.primary;
+    snprintf(out->ip, sizeof(out->ip), IPSTR, IP2STR(&ip.ip));
+    return true;
 }
 
 bool wifi_wait_connected(int timeout_ms)

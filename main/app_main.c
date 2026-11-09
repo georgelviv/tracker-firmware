@@ -40,10 +40,13 @@ void app_main(void)
         gnss_fix_t fix;
         err = gnss_get_fix(&fix);
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "fix %.6f,%.6f alt=%.1fm %.1fkm/h sats=%d hdop=%.1f ts=%" PRId64,
-                     fix.lat, fix.lon, fix.alt_m, fix.speed_kmh, fix.sats, fix.hdop, fix.ts_ms);
+            ESP_LOGI(TAG, "fix %.6f,%.6f alt=%.1fm %.1fkm/h sats=%d/%d %dD hdop=%.1f snr=%.0f ts=%" PRId64,
+                     fix.lat, fix.lon, fix.alt_m, fix.speed_kmh, fix.sats,
+                     fix.in_view[0] + fix.in_view[1] + fix.in_view[2] + fix.in_view[3],
+                     fix.fix_type, fix.hdop, fix.snr_avg, fix.ts_ms);
+            link_info_t link;
             if (wifi_wait_connected(5000)) {
-                if (firebase_publish_fix(&fix) == ESP_OK) {
+                if (firebase_publish_fix(&fix, wifi_get_info(&link) ? &link : NULL) == ESP_OK) {
                     ESP_LOGI(TAG, "published");
                 }
             } else {

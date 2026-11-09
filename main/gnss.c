@@ -104,6 +104,27 @@ static int split_fields(char *s, char **fields, int max)
     return n;
 }
 
+static int system_of(const char *talker)
+{
+    if (strncmp(talker, "GP", 2) == 0) return GNSS_SYS_GPS;
+    if (strncmp(talker, "GL", 2) == 0) return GNSS_SYS_GLONASS;
+    if (strncmp(talker, "BD", 2) == 0 || strncmp(talker, "GB", 2) == 0) return GNSS_SYS_BEIDOU;
+    if (strncmp(talker, "GA", 2) == 0) return GNSS_SYS_GALILEO;
+    return -1;
+}
+
+static void update_snr_summary(gnss_nmea_state_t *st)
+{
+    int sum = 0, cnt = 0, max = 0;
+    for (int i = 0; i < GNSS_SYS_COUNT; i++) {
+        sum += st->snr_sum[i];
+        cnt += st->snr_cnt[i];
+        if (st->snr_max[i] > max) max = st->snr_max[i];
+    }
+    st->fix.snr_avg = cnt ? (float)sum / cnt : 0;
+    st->fix.snr_max = max;
+}
+
 bool gnss_nmea_parse(const char *line, gnss_nmea_state_t *st)
 {
     char buf[128];
@@ -129,11 +150,47 @@ bool gnss_nmea_parse(const char *line, gnss_nmea_state_t *st)
         }
         return true;
     }
-    if (strcmp(type, "GGA") == 0 && n >= 10) {
-        // $xxGGA,time,lat,N/S,lon,E/W,quality,sats,hdop,alt,M,...
+    if (strcmp(type, "GGA") == 0 && n >= 12) {
+        // $xxGGA,time,lat,N/S,lon,E/W,quality,sats,hdop,alt,M,geoid,M,...
+        st->fix.quality = atoi(f[6]);
         st->fix.sats = atoi(f[7]);
         st->fix.hdop = atof(f[8]);
         st->fix.alt_m = atof(f[9]);
+        st->fix.geoid_m = atof(f[11]);
+        return true;
+    }
+    if (strcmp(type, "GSA") == 0 && n >= 18) {
+        // $xxGSA,mode,fixType,sv1..sv12,pdop,hdop,vdop[,systemId]
+        st->fix.fix_type = atoi(f[2]);
+        st->fix.pdop = atof(f[15]);
+        st->fix.vdop = atof(f[17]);
+        return true;
+    }
+    if (strcmp(type, "GSV") == 0 && n >= 4) {
+        // $xxGSV,numMsgs,msgNum,inView,{prn,elev,az,snr}x(1..4)[,signalId]
+        int sys = system_of(f[0]);
+        if (sys < 0) {
+            return true;  // valid sentence, constellation we don't track
+        }
+        int total = atoi(f[1]), num = atoi(f[2]);
+        if (num == 1) {
+            st->gsv_sum = st->gsv_cnt = st->gsv_max = 0;
+        }
+        st->fix.in_view[sys] = atoi(f[3]);
+        for (int i = 7; i < n && i < 4 + 4 * 4; i += 4) {
+            if (f[i][0]) {
+                int snr = atoi(f[i]);
+                st->gsv_sum += snr;
+                st->gsv_cnt++;
+                if (snr > st->gsv_max) st->gsv_max = snr;
+            }
+        }
+        if (num == total) {
+            st->snr_sum[sys] = st->gsv_sum;
+            st->snr_cnt[sys] = st->gsv_cnt;
+            st->snr_max[sys] = st->gsv_max;
+            update_snr_summary(st);
+        }
         return true;
     }
     return false;
