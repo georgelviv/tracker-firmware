@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "cJSON.h"
+#include "battery.h"
+#include "diag.h"
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
@@ -158,6 +160,14 @@ static cJSON *fix_to_json(const gnss_fix_t *fix, const link_info_t *link)
     cJSON *dev = cJSON_AddObjectToObject(o, "device");
     cJSON_AddNumberToObject(dev, "uptime", (double)(esp_timer_get_time() / 1000000));
     cJSON_AddStringToObject(dev, "fw", esp_app_get_description()->version);
+    int bat = battery_read_mv();
+    if (bat > 0) {
+        cJSON_AddNumberToObject(dev, "battery", bat);  // mV
+    }
+    const diag_info_t *d = diag_get();
+    cJSON_AddStringToObject(dev, "reset", d->reset_reason);
+    cJSON_AddNumberToObject(dev, "boots", d->boots);
+    cJSON_AddNumberToObject(dev, "brownouts", d->brownouts);
     cJSON *sv = cJSON_AddObjectToObject(o, "receivedAt");
     cJSON_AddStringToObject(sv, ".sv", "timestamp");  // server-side timestamp
     return o;

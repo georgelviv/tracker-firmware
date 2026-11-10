@@ -1,4 +1,6 @@
 #include <inttypes.h>
+#include "battery.h"
+#include "diag.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "firebase.h"
@@ -20,6 +22,10 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    diag_init();
+    if (battery_init() != ESP_OK) {
+        ESP_LOGW(TAG, "battery ADC unavailable");
+    }
 
     ESP_LOGI(TAG, "device %s, reporting every %d s", CONFIG_TRACKER_DEVICE_ID,
              CONFIG_TRACKER_REPORT_INTERVAL_S);
