@@ -43,26 +43,37 @@ void app_main(void)
     TickType_t last = xTaskGetTickCount();
 
     for (;;) {
-        gnss_fix_t fix;
+        gnss_fix_t fix = {0};
         err = gnss_get_fix(&fix);
-        if (err == ESP_OK) {
+        gps_state_t state = err == ESP_OK               ? GPS_FIX
+                            : err == ESP_ERR_NOT_FOUND ? GPS_SEARCHING
+                                                       : GPS_NO_DATA;
+        if (state == GPS_FIX) {
             ESP_LOGI(TAG, "fix %.6f,%.6f alt=%.1fm %.1fkm/h sats=%d/%d %dD hdop=%.1f snr=%.0f ts=%" PRId64,
                      fix.lat, fix.lon, fix.alt_m, fix.speed_kmh, fix.sats,
                      fix.in_view[0] + fix.in_view[1] + fix.in_view[2] + fix.in_view[3],
                      fix.fix_type, fix.hdop, fix.snr_avg, fix.ts_ms);
-            link_info_t link;
-            if (wifi_wait_connected(5000)) {
-                if (firebase_publish_fix(&fix, wifi_get_info(&link) ? &link : NULL) == ESP_OK) {
-                    ESP_LOGI(TAG, "published");
-                }
-            } else {
-                ESP_LOGW(TAG, "no Wi-Fi, fix dropped");  // TODO: queue offline / send via LTE
-            }
-        } else if (err == ESP_ERR_NOT_FOUND) {
+        } else if (state == GPS_SEARCHING) {
             ESP_LOGI(TAG, "waiting for GPS fix... (satellites in use: %d)", fix.sats);
         } else {
             ESP_LOGW(TAG, "no data from the L76K GPS module - check that it is fitted and powered");
         }
+
+        // Report every cycle so the map can tell "online, no fix" from offline.
+        link_info_t link;
+        bool ok = false;
+        if (wifi_wait_connected(5000)) {
+            ok = firebase_publish(state, &fix, wifi_get_info(&link) ? &link : NULL) == ESP_OK;
+            if (ok && state == GPS_FIX) {
+                ESP_LOGI(TAG, "published");
+            } else if (ok) {
+                ESP_LOGI(TAG, "published status (no fix)");
+            }
+        } else {
+            ESP_LOGW(TAG, "no Wi-Fi, report dropped");  // TODO: queue offline / send via LTE
+        }
+        diag_record(state != GPS_FIX ? DIAG_NO_FIX : ok ? DIAG_UPLOADED : DIAG_UPLOAD_FAILED,
+                    battery_read_mv());
         vTaskDelayUntil(&last, period);
     }
 }

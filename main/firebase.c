@@ -122,7 +122,25 @@ static esp_err_t ensure_token(void)
 
 static const char *SYS_NAMES[GNSS_SYS_COUNT] = {"gps", "glonass", "beidou", "galileo"};
 
-static cJSON *fix_to_json(const gnss_fix_t *fix, const link_info_t *link)
+static void add_satellites(cJSON *o, const gnss_fix_t *fix)
+{
+    cJSON_AddNumberToObject(o, "sats", fix->sats);
+    cJSON_AddNumberToObject(o, "snrAvg", fix->snr_avg);
+    cJSON_AddNumberToObject(o, "snrMax", fix->snr_max);
+    cJSON *view = cJSON_AddObjectToObject(o, "inView");
+    for (int i = 0; i < GNSS_SYS_COUNT; i++) {
+        cJSON_AddNumberToObject(view, SYS_NAMES[i], fix->in_view[i]);
+    }
+}
+
+static void add_server_time(cJSON *o)
+{
+    cJSON *sv = cJSON_AddObjectToObject(o, "receivedAt");
+    cJSON_AddStringToObject(sv, ".sv", "timestamp");  // server-side timestamp
+}
+
+// Last known position; written only when there is a fix.
+static cJSON *position_json(const gnss_fix_t *fix, const link_info_t *link)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "lat", fix->lat);
@@ -141,11 +159,21 @@ static cJSON *fix_to_json(const gnss_fix_t *fix, const link_info_t *link)
     cJSON_AddNumberToObject(gps, "pdop", fix->pdop);
     cJSON_AddNumberToObject(gps, "vdop", fix->vdop);
     cJSON_AddNumberToObject(gps, "geoid", fix->geoid_m);
-    cJSON_AddNumberToObject(gps, "snrAvg", fix->snr_avg);
-    cJSON_AddNumberToObject(gps, "snrMax", fix->snr_max);
-    cJSON *view = cJSON_AddObjectToObject(gps, "inView");
-    for (int i = 0; i < GNSS_SYS_COUNT; i++) {
-        cJSON_AddNumberToObject(view, SYS_NAMES[i], fix->in_view[i]);
+    add_satellites(gps, fix);
+    add_server_time(o);
+    return o;
+}
+
+static const char *GPS_STATE_NAMES[] = {"fix", "searching", "no-data"};
+
+// Live health; written every report cycle, with or without a fix.
+static cJSON *status_json(gps_state_t state, const gnss_fix_t *fix, const link_info_t *link)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON *gps = cJSON_AddObjectToObject(o, "gps");
+    cJSON_AddStringToObject(gps, "state", GPS_STATE_NAMES[state]);
+    if (state != GPS_NO_DATA) {
+        add_satellites(gps, fix);
     }
 
     if (link) {
@@ -168,18 +196,33 @@ static cJSON *fix_to_json(const gnss_fix_t *fix, const link_info_t *link)
     cJSON_AddStringToObject(dev, "reset", d->reset_reason);
     cJSON_AddNumberToObject(dev, "boots", d->boots);
     cJSON_AddNumberToObject(dev, "brownouts", d->brownouts);
-    cJSON *sv = cJSON_AddObjectToObject(o, "receivedAt");
-    cJSON_AddStringToObject(sv, ".sv", "timestamp");  // server-side timestamp
+    if (d->prev.boot) {
+        cJSON *prev = cJSON_AddObjectToObject(dev, "prev");
+        cJSON_AddNumberToObject(prev, "boot", d->prev.boot);
+        cJSON_AddNumberToObject(prev, "uptime", d->prev.uptime_s);
+        cJSON_AddNumberToObject(prev, "uploads", d->prev.uploads);
+        cJSON_AddNumberToObject(prev, "failures", d->prev.failures);
+        cJSON_AddNumberToObject(prev, "noFix", d->prev.no_fix);
+        if (d->prev.min_mv > 0) {
+            cJSON_AddNumberToObject(prev, "minBattery", d->prev.min_mv);
+        }
+    }
+    add_server_time(o);
     return o;
 }
 
-esp_err_t firebase_publish_fix(const gnss_fix_t *fix, const link_info_t *link)
+esp_err_t firebase_publish(gps_state_t state, const gnss_fix_t *fix, const link_info_t *link)
 {
     if (ensure_token() != ESP_OK) {
         return ESP_FAIL;
     }
 
-    cJSON *json = fix_to_json(fix, link);
+    // One multi-path update: status always, latest only with a fix.
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddItemToObject(json, "status", status_json(state, fix, link));
+    if (state == GPS_FIX) {
+        cJSON_AddItemToObject(json, "latest", position_json(fix, link));
+    }
     char *body = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
 
@@ -190,9 +233,9 @@ esp_err_t firebase_publish_fix(const gnss_fix_t *fix, const link_info_t *link)
     esp_err_t err = ESP_FAIL;
 
     for (int attempt = 0; attempt < 2; attempt++) {
-        snprintf(url, url_len, "%s/devices/%s/latest.json?print=silent&auth=%s",
+        snprintf(url, url_len, "%s/devices/%s.json?print=silent&auth=%s",
                  CONFIG_TRACKER_FIREBASE_DB_URL, CONFIG_TRACKER_DEVICE_ID, s_id_token);
-        err = http_request(HTTP_METHOD_PUT, url, body, resp, sizeof(resp), &status);
+        err = http_request(HTTP_METHOD_PATCH, url, body, resp, sizeof(resp), &status);
         if (err == ESP_OK && (status == 200 || status == 204)) {
             break;
         }
