@@ -133,6 +133,55 @@ static void add_satellites(cJSON *o, const gnss_fix_t *fix)
     }
 }
 
+// Every satellite in view: where it is in the sky, its signal, and whether
+// the receiver uses it for the position.
+static void add_sky(cJSON *o, const gnss_fix_t *fix)
+{
+    cJSON *sky = cJSON_AddArrayToObject(o, "sky");
+    for (int i = 0; i < fix->sat_count; i++) {
+        const gnss_sat_t *s = &fix->sat[i];
+        cJSON *j = cJSON_CreateObject();
+        cJSON_AddStringToObject(j, "sys", SYS_NAMES[s->sys]);
+        cJSON_AddNumberToObject(j, "prn", s->prn);
+        if (s->elev >= 0 && s->az >= 0) {
+            cJSON_AddNumberToObject(j, "el", s->elev);
+            cJSON_AddNumberToObject(j, "az", s->az);
+        }
+        if (s->snr >= 0) {
+            cJSON_AddNumberToObject(j, "snr", s->snr);
+        }
+        if (s->used) {
+            cJSON_AddBoolToObject(j, "used", true);
+        }
+        cJSON_AddItemToArray(sky, j);
+    }
+}
+
+// Receiver details that are useful with or without a fix.
+static void add_receiver(cJSON *o, const gnss_fix_t *fix)
+{
+    if (fix->ttff_s >= 0) {
+        cJSON_AddNumberToObject(o, "ttff", fix->ttff_s);
+    }
+    if (fix->clock_ms > 0) {
+        cJSON_AddNumberToObject(o, "clock", (double)fix->clock_ms);
+    }
+    if (fix->mode) {
+        char mode[2] = {fix->mode, 0};
+        cJSON_AddStringToObject(o, "mode", mode);
+    }
+    if (fix->antenna[0]) {
+        cJSON_AddStringToObject(o, "antenna", fix->antenna);
+    }
+    if (fix->err_lat_m > 0 || fix->err_lon_m > 0) {
+        cJSON *err = cJSON_AddObjectToObject(o, "err");
+        cJSON_AddNumberToObject(err, "lat", fix->err_lat_m);
+        cJSON_AddNumberToObject(err, "lon", fix->err_lon_m);
+        cJSON_AddNumberToObject(err, "alt", fix->err_alt_m);
+    }
+    add_sky(o, fix);
+}
+
 static void add_server_time(cJSON *o)
 {
     cJSON *sv = cJSON_AddObjectToObject(o, "receivedAt");
@@ -174,6 +223,7 @@ static cJSON *status_json(gps_state_t state, const gnss_fix_t *fix, const link_i
     cJSON_AddStringToObject(gps, "state", GPS_STATE_NAMES[state]);
     if (state != GPS_NO_DATA) {
         add_satellites(gps, fix);
+        add_receiver(gps, fix);
     }
 
     if (link) {

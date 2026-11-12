@@ -125,6 +125,43 @@ static void update_snr_summary(gnss_nmea_state_t *st)
     st->fix.snr_max = max;
 }
 
+// GSA (NMEA 4.10+) ends with a system ID: 1 GPS, 2 GLONASS, 3 Galileo, 4 BeiDou.
+static int system_of_id(int id)
+{
+    switch (id) {
+    case 1: return GNSS_SYS_GPS;
+    case 2: return GNSS_SYS_GLONASS;
+    case 3: return GNSS_SYS_GALILEO;
+    case 4: return GNSS_SYS_BEIDOU;
+    default: return -1;
+    }
+}
+
+// Rebuilds fix.sat from the per-constellation lists and the used-in-fix sets.
+static void rebuild_sats(gnss_nmea_state_t *st)
+{
+    int n = 0;
+    for (int sys = 0; sys < GNSS_SYS_COUNT; sys++) {
+        for (int i = 0; i < st->sys_sat_n[sys] && n < GNSS_MAX_SATS; i++) {
+            gnss_sat_t s = st->sys_sat[sys][i];
+            s.used = false;
+            for (int u = 0; u < st->used_n[sys]; u++) {
+                if (st->used[sys][u] == s.prn) {
+                    s.used = true;
+                    break;
+                }
+            }
+            st->fix.sat[n++] = s;
+        }
+    }
+    st->fix.sat_count = n;
+}
+
+static int field_int(const char *s, int missing)
+{
+    return s[0] ? atoi(s) : missing;
+}
+
 bool gnss_nmea_parse(const char *line, gnss_nmea_state_t *st)
 {
     char buf[128];
@@ -139,8 +176,11 @@ bool gnss_nmea_parse(const char *line, gnss_nmea_state_t *st)
     const char *type = f[0] + 2;
 
     if (strcmp(type, "RMC") == 0 && n >= 10) {
-        // $xxRMC,time,status,lat,N/S,lon,E/W,speed_kn,course,date,...
+        // $xxRMC,time,status,lat,N/S,lon,E/W,speed_kn,course,date,magvar,E/W,mode
         st->rmc_valid = f[2][0] == 'A' && f[3][0] && f[5][0];
+        // The receiver keeps UTC once it has decoded any satellite, even without a fix.
+        st->fix.clock_ms = parse_ts_ms(f[9], f[1]);
+        st->fix.mode = n >= 13 && f[12][0] ? f[12][0] : 0;
         if (st->rmc_valid) {
             st->fix.lat = parse_coord(f[3]) * (f[4][0] == 'S' ? -1 : 1);
             st->fix.lon = parse_coord(f[5]) * (f[6][0] == 'W' ? -1 : 1);
@@ -161,9 +201,24 @@ bool gnss_nmea_parse(const char *line, gnss_nmea_state_t *st)
     }
     if (strcmp(type, "GSA") == 0 && n >= 18) {
         // $xxGSA,mode,fixType,sv1..sv12,pdop,hdop,vdop[,systemId]
+        // One GSA per constellation; each lists the satellites used from it.
         st->fix.fix_type = atoi(f[2]);
         st->fix.pdop = atof(f[15]);
         st->fix.vdop = atof(f[17]);
+        int sys = n >= 19 && f[18][0] ? system_of_id(atoi(f[18])) : system_of(f[0]);
+        if (sys < 0 && f[3][0]) {  // "GN" talker without ID: guess from the numbering
+            int prn = atoi(f[3]);
+            sys = prn >= 65 && prn <= 96 ? GNSS_SYS_GLONASS : GNSS_SYS_GPS;
+        }
+        if (sys >= 0) {
+            st->used_n[sys] = 0;
+            for (int i = 3; i < 15; i++) {
+                if (f[i][0]) {
+                    st->used[sys][st->used_n[sys]++] = (uint8_t)atoi(f[i]);
+                }
+            }
+            rebuild_sats(st);
+        }
         return true;
     }
     if (strcmp(type, "GSV") == 0 && n >= 4) {
@@ -175,14 +230,28 @@ bool gnss_nmea_parse(const char *line, gnss_nmea_state_t *st)
         int total = atoi(f[1]), num = atoi(f[2]);
         if (num == 1) {
             st->gsv_sum = st->gsv_cnt = st->gsv_max = 0;
+            st->gsv_sat_n = 0;
         }
         st->fix.in_view[sys] = atoi(f[3]);
-        for (int i = 7; i < n && i < 4 + 4 * 4; i += 4) {
-            if (f[i][0]) {
-                int snr = atoi(f[i]);
+        // Up to four satellites per sentence: prn, elevation, azimuth, snr.
+        for (int i = 4; i + 3 < n && i < 4 + 4 * 4; i += 4) {
+            if (!f[i][0]) {
+                continue;
+            }
+            int snr = field_int(f[i + 3], -1);
+            if (snr >= 0) {
                 st->gsv_sum += snr;
                 st->gsv_cnt++;
                 if (snr > st->gsv_max) st->gsv_max = snr;
+            }
+            if (st->gsv_sat_n < GNSS_MAX_PER_SYS) {
+                st->gsv_sat[st->gsv_sat_n++] = (gnss_sat_t){
+                    .sys = (uint8_t)sys,
+                    .prn = (uint8_t)atoi(f[i]),
+                    .elev = (int8_t)field_int(f[i + 1], -1),
+                    .az = (int16_t)field_int(f[i + 2], -1),
+                    .snr = (int8_t)snr,
+                };
             }
         }
         if (num == total) {
@@ -190,6 +259,24 @@ bool gnss_nmea_parse(const char *line, gnss_nmea_state_t *st)
             st->snr_cnt[sys] = st->gsv_cnt;
             st->snr_max[sys] = st->gsv_max;
             update_snr_summary(st);
+            memcpy(st->sys_sat[sys], st->gsv_sat, sizeof(gnss_sat_t) * st->gsv_sat_n);
+            st->sys_sat_n[sys] = st->gsv_sat_n;
+            rebuild_sats(st);
+        }
+        return true;
+    }
+    if (strcmp(type, "GST") == 0 && n >= 9) {
+        // $xxGST,time,rms,major,minor,orient,latErr,lonErr,altErr (metres, 1 sigma)
+        st->fix.err_lat_m = atof(f[6]);
+        st->fix.err_lon_m = atof(f[7]);
+        st->fix.err_alt_m = atof(f[8]);
+        return true;
+    }
+    if (strcmp(type, "TXT") == 0 && n >= 5) {
+        // $GPTXT,01,01,02,ANTENNA OK / ANTENNA OPEN / ANTENNA SHORT
+        const char *a = strstr(f[4], "ANTENNA ");
+        if (a) {
+            strlcpy(st->fix.antenna, a + 8, sizeof(st->fix.antenna));
         }
         return true;
     }
@@ -210,6 +297,25 @@ static SemaphoreHandle_t s_lock;
 static gnss_nmea_state_t s_state;
 static int64_t s_last_fix_us;   // when the last valid RMC arrived
 static int64_t s_last_nmea_us;  // when any valid sentence arrived
+static int64_t s_first_fix_us;  // first valid RMC since power-on (time to first fix)
+
+// Logs each NMEA sentence type the first time it appears (e.g. GNGGA, BDGSV).
+static void note_sentence_type(const char *line)
+{
+    static char seen[24][6];
+    static int n;
+    if (line[0] != '$' || strlen(line) < 6 || n >= 24) {
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        if (strncmp(seen[i], line + 1, 5) == 0) {
+            return;
+        }
+    }
+    memcpy(seen[n], line + 1, 5);
+    seen[n++][5] = '\0';
+    ESP_LOGI(TAG, "receiver sends %s", seen[n - 1]);
+}
 
 static void gnss_task(void *arg)
 {
@@ -227,12 +333,17 @@ static void gnss_task(void *arg)
             if (c == '\n' || c == '\r') {
                 if (len > 0) {
                     line[len] = '\0';
+                    note_sentence_type(line);
                     xSemaphoreTake(s_lock, portMAX_DELAY);
                     if (gnss_nmea_parse(line, &s_state)) {
                         int64_t now = esp_timer_get_time();
                         s_last_nmea_us = now;
                         if (s_state.rmc_valid && strstr(line, "RMC")) {
                             s_last_fix_us = now;
+                            if (!s_first_fix_us) {
+                                s_first_fix_us = now;
+                                ESP_LOGI(TAG, "first fix after %lld s", (long long)(now / 1000000));
+                            }
                         }
                     }
                     xSemaphoreGive(s_lock);
@@ -291,6 +402,10 @@ esp_err_t gnss_get_fix(gnss_fix_t *out)
     } else {
         *out = s_state.fix;
         ret = ESP_OK;
+    }
+    if (ret != ESP_ERR_INVALID_STATE) {
+        // Measured from power-on (the L76K starts cold with the board).
+        out->ttff_s = s_first_fix_us ? (int)(s_first_fix_us / 1000000) : -1;
     }
     xSemaphoreGive(s_lock);
     return ret;
