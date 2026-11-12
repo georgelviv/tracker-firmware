@@ -11,6 +11,7 @@
 
 static const char *TAG = "modem";
 static SemaphoreHandle_t s_lock;
+static bool s_ready;  // answered AT after power-up
 
 static void out_pin(int pin, int level)
 {
@@ -83,6 +84,11 @@ esp_err_t modem_at(const char *cmd, char *resp, size_t resp_len, int timeout_ms)
     return ret;
 }
 
+bool modem_is_ready(void)
+{
+    return s_ready;
+}
+
 esp_err_t modem_init(void)
 {
     s_lock = xSemaphoreCreateMutex();
@@ -113,6 +119,7 @@ esp_err_t modem_init(void)
                 modem_at("ATI", buf, sizeof(buf), 2000) == ESP_OK) {
                 ESP_LOGI(TAG, "modem ready:\n%s", buf);
             }
+            s_ready = true;
             return ESP_OK;
         }
     }

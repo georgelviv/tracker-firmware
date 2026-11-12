@@ -1,5 +1,6 @@
 #include <inttypes.h>
 #include "battery.h"
+#include "cell.h"
 #include "diag.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -60,10 +61,13 @@ void app_main(void)
         }
 
         // Report every cycle so the map can tell "online, no fix" from offline.
+        static cell_info_t cell;  // ~250 bytes, kept off the stack
+        bool have_cell = cell_read(&cell) == ESP_OK;
         link_info_t link;
         bool ok = false;
         if (wifi_wait_connected(5000)) {
-            ok = firebase_publish(state, &fix, wifi_get_info(&link) ? &link : NULL) == ESP_OK;
+            ok = firebase_publish(state, &fix, wifi_get_info(&link) ? &link : NULL,
+                                  have_cell ? &cell : NULL) == ESP_OK;
             if (ok && state == GPS_FIX) {
                 ESP_LOGI(TAG, "published");
             } else if (ok) {

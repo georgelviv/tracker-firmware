@@ -213,10 +213,46 @@ static cJSON *position_json(const gnss_fix_t *fix, const link_info_t *link)
     return o;
 }
 
+static void add_str(cJSON *o, const char *k, const char *v)
+{
+    if (v && v[0]) cJSON_AddStringToObject(o, k, v);
+}
+
+static void add_num(cJSON *o, const char *k, double v)
+{
+    if (v != CELL_NONE) cJSON_AddNumberToObject(o, k, v);
+}
+
+// Mobile modem, SIM and serving cell.
+static void add_cell(cJSON *o, const cell_info_t *c)
+{
+    cJSON *j = cJSON_AddObjectToObject(o, "cell");
+    add_str(j, "model", c->model);
+    add_str(j, "fw", c->fw);
+    add_str(j, "imei", c->imei);
+    add_str(j, "sim", c->sim);
+    add_str(j, "iccid", c->iccid);
+    add_num(j, "reg", c->reg);
+    add_str(j, "op", c->op);
+    add_num(j, "csq", c->csq_dbm);
+    add_num(j, "temp", c->temp_c);
+    add_str(j, "sys", c->sys);
+    add_str(j, "mccmnc", c->mccmnc);
+    add_str(j, "area", c->area);
+    add_num(j, "cellId", c->cell_id);
+    add_str(j, "band", c->band);
+    add_num(j, "channel", c->channel);
+    add_num(j, "rsrp", c->rsrp);
+    add_num(j, "rsrq", c->rsrq);
+    add_num(j, "rssi", c->rssi);
+    add_num(j, "sinr", c->sinr);
+}
+
 static const char *GPS_STATE_NAMES[] = {"fix", "searching", "no-data"};
 
 // Live health; written every report cycle, with or without a fix.
-static cJSON *status_json(gps_state_t state, const gnss_fix_t *fix, const link_info_t *link)
+static cJSON *status_json(gps_state_t state, const gnss_fix_t *fix, const link_info_t *link,
+                          const cell_info_t *cell)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON *gps = cJSON_AddObjectToObject(o, "gps");
@@ -233,6 +269,10 @@ static cJSON *status_json(gps_state_t state, const gnss_fix_t *fix, const link_i
         cJSON_AddNumberToObject(net, "rssi", link->rssi);
         cJSON_AddNumberToObject(net, "channel", link->channel);
         cJSON_AddStringToObject(net, "ip", link->ip);
+    }
+
+    if (cell && cell->present) {
+        add_cell(o, cell);
     }
 
     cJSON *dev = cJSON_AddObjectToObject(o, "device");
@@ -261,7 +301,8 @@ static cJSON *status_json(gps_state_t state, const gnss_fix_t *fix, const link_i
     return o;
 }
 
-esp_err_t firebase_publish(gps_state_t state, const gnss_fix_t *fix, const link_info_t *link)
+esp_err_t firebase_publish(gps_state_t state, const gnss_fix_t *fix, const link_info_t *link,
+                           const cell_info_t *cell)
 {
     if (ensure_token() != ESP_OK) {
         return ESP_FAIL;
@@ -269,7 +310,7 @@ esp_err_t firebase_publish(gps_state_t state, const gnss_fix_t *fix, const link_
 
     // One multi-path update: status always, latest only with a fix.
     cJSON *json = cJSON_CreateObject();
-    cJSON_AddItemToObject(json, "status", status_json(state, fix, link));
+    cJSON_AddItemToObject(json, "status", status_json(state, fix, link, cell));
     if (state == GPS_FIX) {
         cJSON_AddItemToObject(json, "latest", position_json(fix, link));
     }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include "esp_err.h"
 
@@ -11,3 +12,6 @@ esp_err_t modem_init(void);
 // ESP_FAIL on "ERROR", ESP_ERR_TIMEOUT otherwise. `resp` may be NULL.
 // Thread-safe: calls are serialized with a mutex.
 esp_err_t modem_at(const char *cmd, char *resp, size_t resp_len, int timeout_ms);
+
+// True once modem_init() succeeded.
+bool modem_is_ready(void);

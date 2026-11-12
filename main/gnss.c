@@ -396,7 +396,10 @@ esp_err_t gnss_get_fix(gnss_fix_t *out)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (s_last_nmea_us == 0 || now - s_last_nmea_us > NMEA_MAX_AGE_US) {
         ret = ESP_ERR_INVALID_STATE;
-    } else if (s_last_fix_us == 0 || now - s_last_fix_us > FIX_MAX_AGE_US) {
+    } else if (s_last_fix_us == 0 || now - s_last_fix_us > FIX_MAX_AGE_US ||
+               s_state.fix.quality == 0) {
+        // The L76K can briefly flag RMC valid while GGA already says "no fix"
+        // (0 satellites, altitude 0); treat that as searching.
         *out = s_state.fix;  // sats/hdop are still useful while searching
         ret = ESP_ERR_NOT_FOUND;
     } else {
