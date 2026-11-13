@@ -50,14 +50,6 @@ static void copy_field(char *dst, size_t len, const char *src)
     while (n && (dst[n - 1] == '"' || dst[n - 1] == ' ')) dst[--n] = '\0';
 }
 
-// SIM7600/A76xx report RSRP, RSRQ and RSSI in tenths (e.g. -850 = -85.0 dBm).
-static float lte_value(const char *s, float plausible_min)
-{
-    if (!s[0]) return CELL_NONE;
-    float v = atof(s);
-    return v < plausible_min ? v / 10.0f : v;
-}
-
 void cell_parse_cpsi(const char *resp, cell_info_t *out)
 {
     char line[160];
@@ -75,11 +67,10 @@ void cell_parse_cpsi(const char *resp, cell_info_t *out)
     out->cell_id = strtol(f[4], NULL, 0);
     if (strcmp(out->sys, "LTE") == 0 && n >= 14) {
         // LTE,Online,MCC-MNC,TAC,SCellID,PCellID,Band,EARFCN,DLBW,ULBW,RSRQ,RSRP,RSSI,RSSNR
+        // On the A7670 the RSRQ/RSRP/RSSI fields here are vendor index numbers,
+        // so signal levels come from AT+CESQ instead; only RSSNR (dB) is used.
         copy_field(out->band, sizeof(out->band), f[6]);
         out->channel = atoi(f[7]);
-        out->rsrq = lte_value(f[10], -40);
-        out->rsrp = lte_value(f[11], -160);
-        out->rssi = lte_value(f[12], -130);
         out->sinr = f[13][0] ? atof(f[13]) : CELL_NONE;
     } else if (strcmp(out->sys, "GSM") == 0 && n >= 7) {
         // GSM,Online,MCC-MNC,LAC,CellID,"ARFCN Band",RxLev(dBm),...
@@ -112,6 +103,18 @@ void cell_parse_sim(const char *resp, bool ok, cell_info_t *out)
     } else {
         strlcpy(out->sim, "unknown", sizeof(out->sim));
     }
+}
+
+// +CESQ: rxlev,ber,rscp,ecno,rsrq,rsrp as 3GPP TS 27.007 index numbers.
+void cell_parse_cesq(const char *resp, cell_info_t *out)
+{
+    const char *p = strstr(resp, "+CESQ: ");
+    if (!p) return;
+    int rxlev, ber, rscp, ecno, rsrq, rsrp;
+    if (sscanf(p + 7, "%d,%d,%d,%d,%d,%d", &rxlev, &ber, &rscp, &ecno, &rsrq, &rsrp) != 6) return;
+    if (rxlev >= 0 && rxlev <= 63) out->rssi = -111 + rxlev;           // 0: below -110 dBm
+    if (rsrq >= 0 && rsrq <= 34) out->rsrq = -20.0f + rsrq / 2.0f;     // 0: below -19.5 dB
+    if (rsrp >= 0 && rsrp <= 97) out->rsrp = -141 + rsrp;              // 0: below -140 dBm
 }
 
 int cell_parse_reg(const char *resp)
@@ -155,6 +158,8 @@ static void read_fixed(void)
             s_fixed.imei[n] = '\0';
         }
     }
+    // Report the operator by name ("lifecell") rather than its code in AT+COPS?.
+    modem_at("AT+COPS=3,0", buf, sizeof(buf), 1000);
 }
 
 esp_err_t cell_read(cell_info_t *out)
@@ -190,6 +195,7 @@ esp_err_t cell_read(cell_info_t *out)
     if (modem_at("AT+CSQ", buf, sizeof(buf), 1000) == ESP_OK) out->csq_dbm = cell_parse_csq(buf);
     if (modem_at("AT+COPS?", buf, sizeof(buf), 2000) == ESP_OK) cell_parse_cops(buf, out);
     if (modem_at("AT+CPSI?", buf, sizeof(buf), 2000) == ESP_OK) cell_parse_cpsi(buf, out);
+    if (modem_at("AT+CESQ", buf, sizeof(buf), 1000) == ESP_OK) cell_parse_cesq(buf, out);
     if (modem_at("AT+CPMUTEMP", buf, sizeof(buf), 1000) == ESP_OK) {
         const char *p = strstr(buf, "+CPMUTEMP: ");
         if (p) out->temp_c = atoi(p + 11);

@@ -22,7 +22,7 @@ typedef struct {
     char op[32];           // operator name
     int csq_dbm;           // signal from AT+CSQ, dBm
     int temp_c;            // modem chip temperature
-    // Serving cell (AT+CPSI?).
+    // Serving cell (AT+CPSI?, levels from AT+CESQ).
     char sys[16];          // LTE / GSM / NO SERVICE
     char mccmnc[8];        // country + network code, e.g. 255-03
     char area[12];         // TAC (LTE) / LAC (GSM), hex as reported
@@ -38,6 +38,7 @@ esp_err_t cell_read(cell_info_t *out);
 
 // ---- exposed for host unit tests ----
 void cell_parse_cpsi(const char *resp, cell_info_t *out);
+void cell_parse_cesq(const char *resp, cell_info_t *out);
 void cell_parse_cops(const char *resp, cell_info_t *out);
 void cell_parse_sim(const char *resp, bool ok, cell_info_t *out);
 int cell_parse_reg(const char *resp);  // +CREG/+CEREG stat, or CELL_NONE
