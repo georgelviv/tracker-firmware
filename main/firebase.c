@@ -246,6 +246,20 @@ static void add_cell(cJSON *o, const cell_info_t *c)
     add_num(j, "rsrq", c->rsrq);
     add_num(j, "rssi", c->rssi);
     add_num(j, "sinr", c->sinr);
+    add_num(j, "pci", c->pci);
+    add_num(j, "bw", c->bw_khz);
+    add_str(j, "imsi", c->imsi);
+    add_str(j, "number", c->number);
+    add_str(j, "spn", c->spn);
+    add_str(j, "smsc", c->smsc);
+    add_num(j, "smsUsed", c->sms_used);
+    add_num(j, "smsTotal", c->sms_total);
+    add_num(j, "mode", c->mode_pref);
+    add_num(j, "psm", c->psm);
+    add_num(j, "attached", c->attached);
+    add_str(j, "apn", c->apn);
+    add_str(j, "dns1", c->dns1);
+    add_str(j, "dns2", c->dns2);
 }
 
 static const char *GPS_STATE_NAMES[] = {"fix", "searching", "no-data"};
