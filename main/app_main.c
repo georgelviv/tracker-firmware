@@ -1,9 +1,11 @@
 #include <inttypes.h>
+#include <string.h>
 #include "battery.h"
 #include "cell.h"
 #include "diag.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include "firebase.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -14,6 +16,26 @@
 
 static const char *TAG = "tracker";
 
+// Wi-Fi while it is connected, otherwise mobile data. The IP stack routes the
+// same way (Wi-Fi has the higher route priority), so this only describes it.
+static bool pick_link(link_info_t *out, const cell_info_t *cell)
+{
+    if (!modem_data_up() && wifi_wait_connected(5000)) {
+        return wifi_get_info(out);
+    }
+    if (wifi_wait_connected(0)) {
+        return wifi_get_info(out);
+    }
+    if (!modem_get_ip(out->ip, sizeof(out->ip))) {
+        return false;
+    }
+    out->type = "lte";
+    strlcpy(out->name, cell && cell->op[0] ? cell->op : "", sizeof(out->name));
+    out->rssi = cell && cell->rsrp != CELL_NONE ? (int)cell->rsrp : 0;  // RSRP, dBm
+    out->channel = 0;
+    return true;
+}
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -22,6 +44,7 @@ void app_main(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+    ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     diag_init();
     if (battery_init() != ESP_OK) {
@@ -34,8 +57,8 @@ void app_main(void)
     ESP_ERROR_CHECK(gnss_init());  // start searching for satellites right away
     wifi_start();
 
-    // The modem is not needed for Wi-Fi tracking; it is powered up now so the
-    // LTE path can be added later. A failure here does not stop tracking.
+    // Mobile data is the fallback when Wi-Fi is out of range.
+    // A failure here does not stop tracking over Wi-Fi.
     if (modem_init() != ESP_OK) {
         ESP_LOGW(TAG, "modem not responding; continuing with Wi-Fi only");
     }
@@ -64,17 +87,16 @@ void app_main(void)
         static cell_info_t cell;  // ~250 bytes, kept off the stack
         bool have_cell = cell_read(&cell) == ESP_OK;
         link_info_t link;
+        bool have_link = pick_link(&link, have_cell ? &cell : NULL);
         bool ok = false;
-        if (wifi_wait_connected(5000)) {
-            ok = firebase_publish(state, &fix, wifi_get_info(&link) ? &link : NULL,
-                                  have_cell ? &cell : NULL) == ESP_OK;
-            if (ok && state == GPS_FIX) {
-                ESP_LOGI(TAG, "published");
-            } else if (ok) {
-                ESP_LOGI(TAG, "published status (no fix)");
+        if (have_link) {
+            ok = firebase_publish(state, &fix, &link, have_cell ? &cell : NULL) == ESP_OK;
+            if (ok) {
+                ESP_LOGI(TAG, "published%s via %s", state == GPS_FIX ? "" : " status (no fix)",
+                         link.type);
             }
         } else {
-            ESP_LOGW(TAG, "no Wi-Fi, report dropped");  // TODO: queue offline / send via LTE
+            ESP_LOGW(TAG, "no Wi-Fi or mobile data, report dropped");  // TODO: queue offline
         }
         diag_record(state != GPS_FIX ? DIAG_NO_FIX : ok ? DIAG_UPLOADED : DIAG_UPLOAD_FAILED,
                     battery_read_mv());

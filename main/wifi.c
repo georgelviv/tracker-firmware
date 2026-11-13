@@ -36,7 +36,6 @@ esp_err_t wifi_start(void)
     }
     s_events = xEventGroupCreate();
 
-    ESP_ERROR_CHECK(esp_netif_init());
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();

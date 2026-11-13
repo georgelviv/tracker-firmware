@@ -20,6 +20,15 @@ menu "Tracker configuration"
             default ""
     endmenu
 
+    menu "Mobile data"
+        config TRACKER_APN
+            string "APN"
+            default "internet"
+            help
+                Access point name of the SIM's operator. "internet" works for
+                lifecell, Kyivstar and Vodafone Ukraine.
+    endmenu
+
     menu "Firebase"
         config TRACKER_FIREBASE_API_KEY
             string "Web API key"

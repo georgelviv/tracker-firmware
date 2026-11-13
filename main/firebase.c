@@ -266,8 +266,8 @@ static cJSON *status_json(gps_state_t state, const gnss_fix_t *fix, const link_i
         cJSON *net = cJSON_AddObjectToObject(o, "net");
         cJSON_AddStringToObject(net, "type", link->type);
         cJSON_AddStringToObject(net, "name", link->name);
-        cJSON_AddNumberToObject(net, "rssi", link->rssi);
-        cJSON_AddNumberToObject(net, "channel", link->channel);
+        if (link->rssi) cJSON_AddNumberToObject(net, "rssi", link->rssi);
+        if (link->channel) cJSON_AddNumberToObject(net, "channel", link->channel);
         cJSON_AddStringToObject(net, "ip", link->ip);
     }
 
